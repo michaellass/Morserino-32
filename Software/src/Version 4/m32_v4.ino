@@ -38,7 +38,10 @@
 #include "MorseWiFi.h"        // WiFi functions
 #include "goertzel.h"         // Goertzel filter
 #include "MorseDecoder.h"     // Decoder Engine
+#include "esp_adc_cal.h"      // ADC callibration data provided by Espressif
 
+#define V_REF 1100            // ADC reference voltage, 1100 by design
+esp_adc_cal_characteristics_t adc_characteristics{};
 
 // define the buttons for the clickbutton library, & other classes that we need
 
@@ -358,6 +361,11 @@ void setup()
   Serial.begin(115200);
   delay(10); // give me time to bring up serial monitor
 
+  // enable Vext
+  pinMode(Vext, OUTPUT);
+  digitalWrite(Vext,LOW);
+  
+  //DEBUG("Vext ON");
 
   MorsePreferences::determineBoardVersion();
   // now set pins according to board version
@@ -378,13 +386,6 @@ void setup()
 
   MorsePreferences::readPreferences("morserino");
   koch.setup(); 
-
- 
-   // enable Vext
-  pinMode(Vext, OUTPUT);
-  digitalWrite(Vext,LOW);
-  
-  //DEBUG("Vext ON");
  
 
   // measure battery voltage, then set pinMode (important for board 4, as the same pin is used for battery measurement
@@ -439,7 +440,7 @@ void setup()
   /// check if a key has been pressed on startup - if yes, we have to perform Hardware Configuration
 
   if (SPIFFS.begin(false))  {                     // while the SPIFFS has not been initialized (i.e. 1st programming), we are not going to check the key press
-      if (key_was_pressed_at_start()) {
+      if (true || key_was_pressed_at_start()) {
          MorsePreferences::displayKeyerPreferencesMenu(MorsePreferences::posHwConf);
          MorsePreferences::adjustKeyerPreference(MorsePreferences::posHwConf);
     
@@ -1847,34 +1848,79 @@ String cleanUpProSigns( String &input ) {
 
 int16_t batteryVoltage() {      /// measure battery voltage and return result in milliVolts
       delay(64);
+
+      switch (MorsePreferences::boardVersion) {
+        case 3:
+          esp_adc_cal_characterize(ADC_UNIT_2,
+                                   ADC_ATTEN_DB_11,
+                                   ADC_WIDTH_BIT_12,
+                                   V_REF,
+                                   &adc_characteristics);
+          break;
+        case 4:
+          esp_adc_cal_characterize(ADC_UNIT_1,
+                                   ADC_ATTEN_DB_11,
+                                   ADC_WIDTH_BIT_12,
+                                   V_REF,
+                                   &adc_characteristics);
+          // turn of Vext
+          digitalWrite(Vext,HIGH);
+          break;
+        default:
+          return 0;
+      }
+      
       double v= 0; int counts = 4;
-      for (int i=0; i<counts   ; ++i) {
-         v+= ReadVoltage(batteryPin);
+      for (int i=0; i<counts; ++i) {
+         v+= ReadVoltage();
          delay(8);
          //DEBUG(String(v,4));
       }
       v /= counts;
-      if (MorsePreferences::boardVersion == 4)      // adjust measurement for board version 4
-        v *= 1.7;
+      switch (MorsePreferences::boardVersion) {
+        case 3:
+          v *= 3.2;  // voltage divider: vbat - 220k - adc - 100k - gnd
+          break;
+        case 4:
+          //v *= 5.4;  // voltage divider: vbat - 220k \     / 100k \        <-- Heltec onboard divider
+                       //                                adc          gnd
+                       //                  3v3  - 165k /     \ 100k /        <-- resistance in rotary encoder and R7
+          v *= 3.2;
+          // turn on Vext again
+          digitalWrite(Vext,LOW);
+          break;
+        default:
+          return 0;
+      }
+      
+      Serial.println("batteryVoltage raw:" + String(v));
       voltage_raw = v;
-      v *= (MorsePreferences::vAdjust * 12.9);      // adjust measurement and convert to millivolts
-      return (int16_t) v;                                                                                       
+      v *= 1.0 / 180 * MorsePreferences::vAdjust; // apply user callibration
+      Serial.println("batteryVoltage cal'd:" + String(v));
+      //while (true) {delay(200);}
+      return (int16_t) v;
 }
 
 
-double ReadVoltage(byte pin){
+double ReadVoltage(){
   adcAttachPin(batteryPin);
-  analogSetClockDiv(128);           //  this value was found by experimenting - no clue what it really does :-(
-  analogSetPinAttenuation(batteryPin,ADC_11db);
-  double reading = analogRead(pin); // Reference voltage is 3v3 so maximum reading is 3v3 = 4095 in range 0 to 4095
-  analogSetClockDiv(1); // 5ms
+  analogSetCycles(16); // This should just increase accuracy but in fact shifts values. 16 seems to give good results.
+  analogSetPinAttenuation(batteryPin, ADC_11db);
 
-  //DEBUG("ReadVoltage:" + String(reading));
+  int reading = analogRead(batteryPin);
+  Serial.println("ReadVoltage raw:" + String(reading));
+  //DEBUG("ReadVoltage raw:" + String(reading));
+
   if(reading < 4 || reading > 4092)     /// invalid measurement
     return 0;
-  //return -0.000000000009824 * pow(reading,3) + 0.000000016557283 * pow(reading,2) + 0.000854596860691 * reading + 0.065440348345433;
-  return -0.000000000000016 * pow(reading,4) + 0.000000000118171 * pow(reading,3)- 0.000000301211691 * pow(reading,2)+ 0.001109019271794 * reading + 0.034143524634089;
-} // Added an improved polynomial, use either, comment out as required
+
+  // Use ADC callibration data provided by the factory
+  int mvolts = esp_adc_cal_raw_to_voltage(reading, &adc_characteristics);
+  //DEBUG("ReadVoltage cal'd:" + String(mvolts));
+  Serial.println("ReadVoltage cal'd:" + String(mvolts));
+
+  return mvolts;
+}
 
 
 

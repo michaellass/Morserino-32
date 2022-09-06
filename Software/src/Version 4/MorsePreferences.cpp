@@ -721,7 +721,7 @@ void internal::displaySerialOut() {
 }
 
 void internal::displayVAdjust() {
-  volt = (int16_t) (voltage_raw *  (MorsePreferences::vAdjust * 12.9));   // recalculate millivolts for new adjustment
+  volt = (int16_t) voltage_raw / 180 * MorsePreferences::vAdjust;   // recalculate millivolts for new adjustment
   sprintf(numBuffer, "%4d mV", volt);
   MorseOutput::printOnScroll(2, REGULAR, 1, numBuffer);
 }
@@ -1597,9 +1597,8 @@ void MorsePreferences::loraSystemSetup() {
     pref.end();
 }
 
-/////// System Setup / Battery Measurement Calibration  /////// called from system config (black knob at start-up)
+/////// System Setup / Battery Measurement Calibration  /////// called from system config (paddels pressed at start-up)
 void MorsePreferences::calibrateVoltageMeasurement() {
-  //voltage_raw = volt / 19.2 * MorsePreferences::vAdjust;
   DEBUG("v_raw: " + String(voltage_raw));
   MorsePreferences::displayKeyerPreferencesMenu(MorsePreferences::posVAdjust);
   MorsePreferences::adjustKeyerPreference(MorsePreferences::posVAdjust);
